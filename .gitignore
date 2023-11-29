@@ -8,6 +8,7 @@ config-test*.json
 node_modules/
 package-lock.json
 yarn.lock
+docker-compose.yml
 
 # IDEs
 .idea/
