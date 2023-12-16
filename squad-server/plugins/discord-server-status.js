@@ -120,10 +120,10 @@ export default class DiscordServerStatus extends DiscordBaseMessageUpdater {
     if (!this.options.setBotStatus) return;
 
     await this.options.discordClient.user.setActivity(
-      `(${this.server.a2sPlayerCount}/${this.server.publicSlots}) ${
+      `${Squad} (${this.server.a2sPlayerCount}/${this.server.publicSlots}) ${
         this.server.currentLayer?.name || 'Unknown'
       }`,
-      { type: 'WATCHING' }
+      { type: 'PLAYING' }
     );
   }
 }
