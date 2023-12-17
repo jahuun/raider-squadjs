@@ -189,9 +189,6 @@ export default class BanManager extends DiscordBasePlugin {
                 let msg = `${this.options.commandPrefix}\n > add {username} {days} {reason}`;
                 this.warn(steamID, msg);
                 break;
-            default:
-                this.warn(steamID, `Unknown vote subcommand: ${subCommand}`);
-                return;
         }
     }
 
