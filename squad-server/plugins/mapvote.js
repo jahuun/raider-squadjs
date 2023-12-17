@@ -6,6 +6,7 @@ import { Layers } from "../layers/index.js"
 import axios from "axios"
 import Layer from '../layers/layer.js';
 import fs from 'fs'
+import path from 'path'
 import process from 'process'
 import SocketIOAPI from './socket-io-api.js';
 import DBLog from './db-log.js';
@@ -225,7 +226,7 @@ export default class MapVote extends DiscordBasePlugin {
             OWIMapLayerGSheetUrl: {
                 required: false,
                 description: "Map/Layers Google Sheet URL provided by OWI",
-                default: "https://docs.google.com/spreadsheets/d/139zvTRo6YnocNM0e4Q_JHHy4gOMG6qiIDWSP2YlMlKM/edit?usp=sharing"
+                default: "https://docs.google.com/spreadsheets/d/1wWB3eNBPLQ7VS9y7jtzyfL_I7LxgZmGVpr0O81b0P84/edit#gid=84736544"
             },
             timeFrames: {
                 required: false,
@@ -267,6 +268,7 @@ export default class MapVote extends DiscordBasePlugin {
         this.endVotingTimeout = null;
         this.timeout_ps = []
         this.a2sPlayerCount = 100;
+        this.lastNominationBroadcast = +(new Date(0));
 
         this.onNewGame = this.onNewGame.bind(this);
         this.onPlayerDisconnected = this.onPlayerDisconnected.bind(this);
@@ -291,12 +293,17 @@ export default class MapVote extends DiscordBasePlugin {
         this.getLayerHistoryForLevel = this.getLayerHistoryForLevel.bind(this);
         this.directMsgNominations = this.directMsgNominations.bind(this);
         this.formatFancyLayer = this.formatFancyLayer.bind(this);
+        this.readLinesReverse = this.readLinesReverse.bind(this);
+        this.getCurrentLayer = this.getCurrentLayer.bind(this);
+        this.setCurrentLayer = this.setCurrentLayer.bind(this);
+        this.onLogLine = this.onLogLine.bind(this);
 
         this.delay = util.promisify(setTimeout);
 
         this.DBLogPlugin;
 
         this.models = {};
+        this.logsFilePath = path.join(this.server.options.logDir, 'SquadGame.log');
 
         this.broadcast = async (msg) => { await this.server.rcon.broadcast(msg); };
         this.warn = async (steamid, msg) => { await this.server.rcon.warn(steamid, msg); };
@@ -315,7 +322,7 @@ export default class MapVote extends DiscordBasePlugin {
     async prepareToMountCustom() {
         this.DBLogPlugin = this.server.plugins.find(p => p instanceof DBLog);
         if (!this.DBLogPlugin) return;
-        
+
         await this.createModel('PlayerVotes', {
             id: {
                 type: DataTypes.INTEGER,
@@ -362,6 +369,7 @@ export default class MapVote extends DiscordBasePlugin {
         this.server.on('NEW_GAME', this.onNewGame);
         this.server.on('CHAT_MESSAGE', this.onChatMessage);
         this.server.on('PLAYER_DISCONNECTED', this.onPlayerDisconnected);
+        this.server.on('UPDATED_SERVER_INFORMATION', (info) => this.setCurrentLayer(info.currentLayer));
         // this.server.on('PLAYER_CONNECTED', () => this.beginVoting());
         this.server.on('ROUND_ENDED', this.endVotingGently)
         // setTimeout(() => {
@@ -377,9 +385,9 @@ export default class MapVote extends DiscordBasePlugin {
         setInterval(this.savePersistentData, 20 * 1000)
         this.debugWebpage();
 
-        this.serverQueryData();
-        setInterval(this.serverQueryData, 5000);
-        this.server.on('UPDATED_A2S_INFORMATION', this.serverQueryData)
+        this.getCurrentLayer();
+
+        this.server.logParser.logReader.reader.on('line', this.onLogLine)
 
         // setTimeout(async () => {
         //     console.log((await this.getLayerHistoryForLevel('Gorodok')).map(l => l.layerClassname))
@@ -853,7 +861,7 @@ export default class MapVote extends DiscordBasePlugin {
                 const cls = cl.toLowerCase().split('_');
                 const fLayers = sanitizedLayers.filter((l) => (
                     ((cls[ 0 ] && cls[ 0 ] != '*') || rnd_layers.filter(l2 => l2.map.name == l.map.name).length < this.options.allowedSameMapEntries) &&
-                    (![ this.server.currentLayer?.map?.name, ...recentlyPlayedMaps ].includes(l.map.name) || cls[ 2 ] || (cls[ 0 ] && cls[ 0 ] != '*')) &&
+                    (![ this.server.currentLayer?.map?.name, ...recentlyPlayedMaps ].includes(l.map.name) || (cls[ 0 ] && cls[ 0 ] != '*')) &&
                     (
                         (
                             (this.options.layerFilteringMode.toLowerCase() == "blacklist" && !this.options.layerLevelBlacklist.find((fl) => this.getLayersFromStringId(fl).map((e) => e.layerid).includes(l.layerid))) ||
@@ -864,6 +872,7 @@ export default class MapVote extends DiscordBasePlugin {
                             )
                         ) || cls[ 2 ]
                     )
+
                     // && (
                     //     (cls[ 0 ] == "*" || l.layerid.toLowerCase().startsWith(cls[ 0 ]))
                     //     || (cls[ 0 ].toLowerCase().startsWith('f:') && [ this.getTranslation(l.teams[ 0 ]), this.getTranslation(l.teams[ 1 ]) ].includes(cls[ 0 ].substring(2).toUpperCase()))
@@ -871,6 +880,7 @@ export default class MapVote extends DiscordBasePlugin {
                     // && (l.gamemode.toLowerCase().startsWith(cls[ 1 ]) || (!cls[ 1 ] && this.options.gamemodeWhitelist.includes(l.gamemode.toUpperCase())))
                     // && (!cls[ 2 ] || l.version.toLowerCase().startsWith("v" + cls[ 2 ].replace(/v(0*)/i, '')))
                     // // && !(this.options.factionsBlacklist.find((f) => [ this.getTranslation(l.teams[ 0 ]), this.getTranslation(l.teams[ 1 ]) ].includes(f)))
+
                     && this.getLayersFromStringId(cl, l)
                     && (cls[ 2 ] || !(
                         this.options.layerLevelBlacklist.find((fl) => this.getLayersFromStringId(fl).map((e) => e.layerid).includes(l.layerid))
@@ -893,12 +903,15 @@ export default class MapVote extends DiscordBasePlugin {
                 if (fLayers.length == 0) continue;
                 // this.verbose(1, 'fLayers', fLayers.map(l => l.layerid));
                 // this.verbose(1, 'rnd_layers', rnd_layers.map(l => l.layerid));
-                let l, maxtries = 10;
-                do l = randomElement(fLayers); while (
+                let l, maxtries = 20;
+
+                do l = randomElement(fLayers);
+                while (
                     rnd_layers.filter(lf => lf.map.name == l.map.name).length > (this.options.allowedSameMapEntries - 1)
-                    && ((await this.getLayerHistoryForLevel(l.layerid.split('_'[ 0 ]), +this.numberRecentLayersToExclude)).find(dbL => dbL.layerClassname == l.layerid) || cls[ 2 ])
+                    // && ((await this.getLayerHistoryForLevel(l.layerid.split('_')[ 0 ], +this.numberRecentLayersToExclude)).find(dbL => dbL.layerClassname == l.layerid) || cls[ 2 ])
                     && --maxtries >= 0
                 )
+
                 if (l) {
                     rnd_layers.push(l);
                     if (!simulate) {
@@ -1079,7 +1092,9 @@ export default class MapVote extends DiscordBasePlugin {
     //NOTE: max squad broadcast message length appears to be 485 characters
     //Note: broadcast strings with multi lines are very strange
     async broadcastNominations() {
+        if (Date.now() - this.lastNominationBroadcast < 30_000) return;
         if (this.nominations.length > 0 && this.votingEnabled) {
+            this.lastNominationBroadcast = Date.now();
             await this.broadcast(this.options.voteBroadcastMessage);
             let allNominationStrings = []
             let nominationStrings = [];
@@ -1128,8 +1143,10 @@ export default class MapVote extends DiscordBasePlugin {
     }
 
     getLayersFromStringId(stringid, findLayer) {
+        stringid = stringid.toUpperCase();
         this.options.gamemodeWhitelist = this.options.gamemodeWhitelist.map(e => e.toUpperCase());
-        const cls = stringid.toLowerCase().split('_');
+        // this.verbose(1, 'Looking for layer', stringid)
+        const cls = stringid.split('_');
 
         let ret;
         const findOrFilter = findLayer ? 'find' : 'filter';
@@ -1143,17 +1160,17 @@ export default class MapVote extends DiscordBasePlugin {
                     !findLayer || findLayer.layerid == l.layerid
                 )
                 && (
-                    (cls[ 0 ] == "*" || l.layerid.toLowerCase().startsWith(cls[ 0 ]))
-                    || (cls[ 0 ].startsWith('f:') && [ this.getTranslation(l.teams[ 0 ]), this.getTranslation(l.teams[ 1 ]) ].includes(cls[ 0 ].substring(2).toUpperCase()))
+                    (cls[ 0 ] == "*" || l.layerid.toUpperCase().startsWith(cls[ 0 ]))
+                    || (cls[ 0 ].startsWith('F:') && [ this.getTranslation(l.teams[ 0 ])?.toUpperCase(), this.getTranslation(l.teams[ 1 ])?.toUpperCase() ].includes(cls[ 0 ].substring(2)))
                 )
                 && (
-                    l.gamemode.toLowerCase().startsWith(cls[ 1 ]) || (!cls[ 1 ] && this.options.gamemodeWhitelist.includes(l.gamemode.toUpperCase()))
+                    l.gamemode.toUpperCase().startsWith(cls[ 1 ]) || (!cls[ 1 ] && this.options.gamemodeWhitelist.find(g => g.toUpperCase() == l.gamemode.toUpperCase()))
                 )
                 && (
                     !cls[ 2 ] || parseInt(l.version.replace(/v(0*)/i, '')) == parseInt(cls[ 2 ].replace(/v(0*)/i, ''))
                 )
             ));
-            else ret = Layers.layers[ findOrFilter ]((l) => ((cls[ 0 ] == "*" || l.mod?.toLowerCase().startsWith(cls[ 0 ].toLowerCase())) && (cls[ 1 ] == "*" || l.map.name.toLowerCase().startsWith(cls[ 1 ])) && (l.gamemode.toLowerCase().startsWith(cls[ 2 ]) || (!cls[ 2 ] && this.options.gamemodeWhitelist.includes(l.gamemode.toUpperCase()))) && (!cls[ 3 ] || parseInt(l.version.toLowerCase().replace(/v(0*)/i, '')) == parseInt(cls[ 3 ].replace(/v(0*)/i, ''))) && (!cls[ 4 ] || cls[ 4 ] == l.layerid.split('_')[ 4 ]?.toLowerCase())))
+            else ret = Layers.layers[ findOrFilter ]((l) => ((cls[ 0 ] == "*" || l.mod?.toUpperCase().startsWith(cls[ 0 ].toUpperCase())) && (cls[ 1 ] == "*" || l.map.name.toUpperCase().startsWith(cls[ 1 ])) && (l.gamemode.toUpperCase().startsWith(cls[ 2 ]) || (!cls[ 2 ] && this.options.gamemodeWhitelist.includes(l.gamemode.toUpperCase()))) && (!cls[ 3 ] || parseInt(l.version.toUpperCase().replace(/v(0*)/i, '')) == parseInt(cls[ 3 ].replace(/v(0*)/i, ''))) && (!cls[ 4 ] || cls[ 4 ] == l.layerid.split('_')[ 4 ]?.toUpperCase())))
         }
         // this.verbose(1,"layers from string",stringid,cls,ret)
         return ret;
@@ -1177,7 +1194,7 @@ export default class MapVote extends DiscordBasePlugin {
         }
         strMsg.trim();
         if (steamID) this.warn(steamID, strMsg)
-        else this.verbose(1,'Unable to warn due to null steamID')
+        else this.verbose(1, 'Unable to warn due to null steamID')
         // const winners = this.currentWinners;
         // await this.msgDirect(steamID, `Current winner${winners.length > 1 ? "s" : ""}: ${winners.join(", ")}`);
     }
@@ -1402,18 +1419,27 @@ export default class MapVote extends DiscordBasePlugin {
         rconLayers.shift();
         rconLayers = rconLayers.map((l) => l.split(' ')[ 0 ])
 
-        if (rconLayers.length > 0) Layers.layers = Layers.layers.filter((l) => l != null && rconLayers.includes(l.layerid))
         // this.verbose(1, 'RCON Layers', rconLayers.length, this.mapLayer(rconLayers[ 1 ]))
         if (rconLayers.length > 0) {
             for (const layer of rconLayers) {
-                const existingLayer = Layers.layers.find((e,) => e?.layerid == layer);
+                const versionRegex = /_v0(\d)$/i;
+                const versionMatching = layer.match(versionRegex);
+                const versionNumber = !!versionMatching ? +versionMatching[ 1 ] : null;
+
+                const existingLayer = Layers.layers.find((e,) => e?.layerid == layer || (!!versionNumber && e?.layerid == layer.replace(versionRegex, `_v${versionNumber}`)));
+                // if (layer == "Manicouagan_RAAS_v01") this.verbose(1, 'Layer', existingLayer)
 
                 const genLayer = this.mapLayer(layer);
 
+                if (!existingLayer) Layers.layers = Layers.layers.filter((l) => l != null && l.layerid != layer)
+
                 if (existingLayer && genLayer) {
+                    if (layer != existingLayer.layerid) existingLayer.layerid = layer
+
                     existingLayer.mod = genLayer.mod;
                     if (existingLayer.version == "TBD") existingLayer.version = genLayer.version
                 }
+
 
                 let newLayer = existingLayer || genLayer
                 // if(layer.startsWith('GC')) this.verbose(1, 'layer', newLayer)
@@ -1506,6 +1532,87 @@ export default class MapVote extends DiscordBasePlugin {
         if (this.options.hideEntryIndex) entryIndex = "";
         return `${entryIndex}${mapString} ` + (!hideVoteCount ? `(${currentVotes})` : "");
         // return `${choiceIndex + 1}❱ ${mapString} (${currentVotes} votes)`
+    }
+
+    /**
+     * 
+     * @param {any[][]} regexArray 
+     * @returns {string}
+     */
+    readLinesReverse(regexArray) {
+        const filePath = this.logsFilePath;
+        const fd = fs.openSync(filePath, 'r');
+        const bufferSize = 1024;
+        let buffer = Buffer.alloc(bufferSize);
+        let leftOver = '';
+        let bytesRead;
+        let position = fs.statSync(filePath).size - bufferSize;
+        let result = false;
+
+        while (position > -1) {
+            bytesRead = fs.readSync(fd, buffer, 0, bufferSize, position);
+            const text = buffer.slice(0, bytesRead).toString() + leftOver;
+            let arr = text.split('\n');
+            // @ts-ignore
+            leftOver = arr.shift();
+            arr.reverse();
+
+            for (const line of arr) {
+                for (const regex of regexArray) {
+                    // @ts-ignore
+                    result = line.match(regex[ 0 ])
+                    if (result) {
+                        result = result[ regex[ 1 ] ].trim();
+                        break;
+                    }
+                }
+                if (result) break;
+            }
+
+            if (result) break;
+            position -= bufferSize;
+        }
+
+        if (!result && leftOver) {
+            for (const regex of regexArray) {
+                // @ts-ignore
+                result = leftOver.match(regex[ 0 ]);
+                if (result) {
+                    result = result[ regex[ 1 ] ].trim();
+                    break;
+                }
+            }
+        }
+
+        fs.closeSync(fd);
+        // @ts-ignore
+        return result;
+    }
+    /**
+     * 
+     * @returns {String}
+     */
+    getCurrentLayer() {
+        const regexes = [
+            [ /\[(.+)\].+LogSquad: OnPreLoadMap: Loading map .+\/([^\/]+)$/, 2 ],
+            [ /\[(.+)\].+LogWorld: SeamlessTravel to: .+\/([^\/]+)$/, 2 ]
+        ]
+        const res = this.readLinesReverse(regexes);
+        // @ts-ignore
+        this.verbose(1, 'Current Layer', res)
+        this.setCurrentLayer(res)
+        return res;
+    }
+
+    setCurrentLayer(layer) {
+        this.server.currentLayer = Layers.layers.find(l => l.layerid == layer)
+    }
+
+    onLogLine(line) {
+        let regMatch;
+
+        regMatch = line.match(/\[(.+)\].+LogWorld: SeamlessTravel to: .+\/([^\/]+)$/)
+        if (regMatch) return this.setCurrentLayer(regMatch[ 2 ])
     }
 }
 
