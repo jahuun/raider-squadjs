@@ -164,11 +164,11 @@ export default class BanManager extends DiscordBasePlugin {
                 else banPlayers.push(banPlayerSteamID);
 
                 if (banPlayers.length == 0) {
-                    this.warn(steamID, `Could not find a player whose ${banPlayerSteamID ? "SteamID is" : "username includes"}: "${commandSplit[ 1 ]}"`)
+                    this.warn(steamID, `Could not find a player whose ${banPlayerSteamID ? "SteamID is" : "username includes"}: ${commandSplit[ 1 ]}`)
                     return;
                 }
                 if (banPlayers.length > 1) {
-                    this.warn(steamID, `Found multiple players whose usernames include: "${commandSplit[ 1 ]}"`)
+                    this.warn(steamID, `Found multiple players whose usernames include: ${commandSplit[ 1 ]}`)
                     return;
                 }
                 const player = banPlayers[ 0 ];
