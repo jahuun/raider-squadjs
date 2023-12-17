@@ -1,7 +1,6 @@
 import { DataTypes, Op } from 'sequelize';
 import DiscordBasePlugin from './discord-base-plugin.js';
 import SocketIOAPI from './socket-io-api.js';
-import Sequelize from 'sequelize';
 
 export default class BanManager extends DiscordBasePlugin {
     static get description() {
