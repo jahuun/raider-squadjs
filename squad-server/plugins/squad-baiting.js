@@ -135,6 +135,7 @@ export default class SquadBaiting extends DiscordBasePlugin {
         this.squadsLeaderHistory = new Map();
         this.squadsCreationTime = new Map();
         this.earlySquadBaitingMarkedSquads = new Map();
+        this.lastRoleChange = new Map();
 
         this.broadcast = (msg) => { this.server.rcon.broadcast(msg); };
         this.warn = (steamid, msg) => { this.server.rcon.warn(steamid, msg); };
@@ -151,9 +152,8 @@ export default class SquadBaiting extends DiscordBasePlugin {
         setInterval(async () => {
             if (this.server.players.length < this.options.playerThreshold) return;
             this.verbose(1, `Players: ${this.server.players.length}/${this.options.playerThreshold}`)
-            // await this.server.updateSquadList();
-            // const squads = this.verbose(1, '', (await this.server.rcon.execute('ListSquads')).split('\n').map(e => /^ID:\s*(?<squadID>\d+)\s*\|\s*Name:\s*(?<squadName>[^|\s].*?)\s*\|\s*Size:\s*(?<size>\d+)\s*\|\s*Locked:\s*(?<locked>True|False)\s*\|\s*Creator Name:\s*(?<creator_name>[^|\s].*?)\s*\|\s*Creator Online IDs: EOS (?<EOSID>[a-f\d]{32}) (?:steam: (?<steamID>\d{17}+)$/i.exec(e)?.groups).filter(e => e != null));
-            const playerRegex = /^ID:\s*(?<playerID>\d+)\s*\|\s*Online IDS: EOS:\s*(?<EOSID>[a-f\d]{32})(?:steam:(?<steamID>\d{17}+)\s*\|\s*Name:\s*(?<name>.*?)\s*\|\s*Team ID:\s*(?<teamID>\d+)\s*\|\s*Squad ID:\s*(?<squadID>[^\s]+)\s*\|\s*Is Leader:\s*(?<isLeader>True|False)\s*\|\s*Role:\s*(?<role>[^|\s].*?)\s*$/i;
+
+            const playerRegex = /ID: ([0-9]+) \| Online IDs: EOS: (?<eosID>[0-9a-f]{32}) steam: (?<steamID>\d{17}) \| Name: (?<name>.*?) \| Team ID: (?<teamID>[0-9]+) \| Squad ID: (?<squadID>[0-9]+|N\/A) \| Is Leader: (?<isLeader>True|False) \| Role: (?<role>[^\s]*)/;
             const players = (await this.server.rcon.execute('ListPlayers')).split('\n').map(e => playerRegex.exec(e)?.groups).filter(e => e != null);
 
             const newSquads = (await this.getSquads()).map(e => ({
@@ -169,6 +169,7 @@ export default class SquadBaiting extends DiscordBasePlugin {
                 if (!match) {
                     this.verbose(1, `Early squad baiting reset for: ${sqUid}. OLD-LEADER: ${s.leader.name}. Due to squad being disbanded`)
                     this.earlySquadBaitingMarkedSquads.delete(sqUid)
+                    return;
                 }
 
                 const earlySquadBaitingDetected = (Date.now() - +this.squadsCreationTime.get(sqUid) < this.options.detectEarlySquadbaitingMinutes * 60 * 1000);
@@ -180,12 +181,13 @@ export default class SquadBaiting extends DiscordBasePlugin {
                     else {
                         this.earlySquadBaitingMarkedSquads.delete(sqUid)
                         this.verbose(1, `Early squad baiting reset for: ${sqUid}. CURRENT-LEADER: ${match.leader.name}`)
+                        return;
                     }
                 }
 
                 const roleChanged = this.options.roleChangeTriggersSquadBaiting && earlySquadBaitingDetected && !match.leader.role.match(/SL/i) && s.leader.role.match(/SL/i) && match.leader.steamID == s.leader.steamID;
                 const leaderChanged = match.leader.steamID != s.leader.steamID;
-                const baiting = match && (leaderChanged || roleChanged);
+                const baiting = match && (leaderChanged || roleChanged) && !s.squadName.match(/admin/i);
 
                 if (s.squadName.match(/TEST/i)) {
                     this.verbose(1, 'Baiting Check', sqUid, s.leader.name, `ROLE-CHANGED-OPTION: ${this.options.roleChangeTriggersSquadBaiting} - EARLY-SBAITING: ${earlySquadBaitingDetected} - ROLE-CHANGED: ${roleChanged} - LEADER-CHANGED: ${leaderChanged} - SQUAD-AGE-SECONDS: ${(Date.now() - +this.squadsCreationTime.get(sqUid)) / 1000}`)
@@ -195,7 +197,8 @@ export default class SquadBaiting extends DiscordBasePlugin {
                 if (baiting) {
                     if (earlySquadBaitingDetected && !this.earlySquadBaitingMarkedSquads.get(sqUid)) {
                         this.earlySquadBaitingMarkedSquads.set(sqUid, Date.now());
-                        this.warn(match.leader.steamID, `You have ${this.options.enforceEarlySquadBaitingAfterSeconds} seconds to equip a SQUAD LEADER role`);
+                        const squadbaitingSecondsAfterSquadCreation = Math.round((Date.now() - +this.squadsCreationTime.get(sqUid)) / 1000)
+                        this.warn(match.leader.steamID, `You have ${this.options.enforceEarlySquadBaitingAfterSeconds} seconds to equip a SQUAD LEADER role\nSquad baiting happened ${squadbaitingSecondsAfterSquadCreation} seconds after squad creation.`);
                     }
 
                     const plBaitingAmount = (this.playerBaiting.get(s.leader.steamID) || 0) + 1;
@@ -420,9 +423,9 @@ export default class SquadBaiting extends DiscordBasePlugin {
 
         for (const line of responseSquad.split('\n')) {
             const match = line.match(
-                /ID: ([0-9]+) \| Name: (.+) \| Size: ([0-9]+) \| Locked: (True|False) \| Creator Name: (.+) \| Creator Steam ID: (\d+)/
+                /ID: (\d+) \| Name: (.+) \| Size: (\d+) \| Locked: (True|False) \| Creator Name: (.+) \| Creator Online IDs: EOS: ([\d\w]{32}) steam: (\d{17})/
             );
-            const matchSide = line.match(/Team ID: (1|2) \((.+)\)/);
+            const matchSide = line.match(/Team ID: (\d) \((.+)\)/);
             if (matchSide) {
                 teamID = matchSide[ 1 ];
                 teamName = matchSide[ 2 ];
@@ -432,11 +435,13 @@ export default class SquadBaiting extends DiscordBasePlugin {
                 squadID: match[ 1 ],
                 squadName: match[ 2 ],
                 size: match[ 3 ],
-                locked: match[ 4 ],
+                locked: !!match[ 4 ].match(/true/i),
                 teamID: teamID,
                 teamName: teamName,
                 creatorName: match[ 5 ],
-                creatorSteamID: match[ 6 ],
+                creatorEOSID: match[ 6 ],
+                creatorSteamID: match[ 7 ],
+                players: []
             });
         }
 
