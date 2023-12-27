@@ -22,7 +22,11 @@ class Layers {
 
     Logger.verbose('Layers', 1, 'Pulling layers...');
     const response = await axios.get(
+<<<<<<< HEAD
       'https://raw.githubusercontent.com/fantinodavide/SquadLayerList/main/layers.json'
+=======
+      'https://raw.githubusercontent.com/jahuun/raiderlayer/main/raiders.json'
+>>>>>>> 91dbce4 (GE layer list)
     );
 
     for (const layer of response.data.Maps) {
