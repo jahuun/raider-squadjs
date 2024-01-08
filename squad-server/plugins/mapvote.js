@@ -690,6 +690,7 @@ export default class MapVote extends DiscordBasePlugin {
                     await this.warn(steamID, "There is no vote running right now");
                     return;
                 }
+                this.lastNominationBroadcast = +(new Date(0))
                 this.broadcastNominations();
                 return;
             case "endmatch":
@@ -975,6 +976,7 @@ export default class MapVote extends DiscordBasePlugin {
     //when there are enough players it clears old votes, sets up new nominations, and starts broadcast
     async beginVoting(force = false, steamid = null, cmdLayers = []) {
         if (!this.options.automaticVoteStart && !force) return;
+        this.lastNominationBroadcast = +(new Date(0));
 
         this.verbose(1, "Starting vote")
         const playerCount = this.server.players.length;
