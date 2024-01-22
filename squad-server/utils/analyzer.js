@@ -483,7 +483,7 @@ export default class Analyzer extends EventEmitter {
           const cap = 50;
 
           // Check if the frequency counter has reached the cap
-          if (data.getFrequencyCounter('AcceptedConnection') < cap) {
+          if (data.getVar('AcceptedConnection') < cap) {
             data.incrementFrequencyCounter('AcceptedConnection', 0.001);
           }
           return;
