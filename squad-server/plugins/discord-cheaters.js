@@ -43,7 +43,7 @@ export default class DiscordCheaters extends DiscordBasePlugin {
       color: {
         required: false,
         description: 'The color of the embed.',
-        default: 16761867
+        default: 16711680
       },
       channelID: {
         required: false,
@@ -119,7 +119,7 @@ export default class DiscordCheaters extends DiscordBasePlugin {
   async checkVersion() {
     const owner = 'IgnisAlienus';
     const repo = 'SquadJS-Cheater-Detection';
-    const currentVersion = 'v1.3.0';
+    const currentVersion = 'v1.3.1';
 
     try {
       const latestVersion = await getLatestVersion(owner, repo);
@@ -521,7 +521,7 @@ export default class DiscordCheaters extends DiscordBasePlugin {
                       inline: false
                     }
                   ],
-                  timestamp: info.time.toISOString()
+                  timestamp: new Date(),
                 }
               };
 
